@@ -142,7 +142,7 @@ def main():
         
         # 1. 参数设置
         st.subheader("1. AI 参数")
-        conf = st.slider("置信度", 0.01, 0.5, 0.15)
+        conf = st.slider("置信度", 0.01, 0.5, 0.01)
         iou = st.slider("去重阈值", 0.05, 0.8, 0.2)
         
         st.markdown("---")
@@ -292,3 +292,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
