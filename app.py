@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-仓库货物检测系统 V12 (防爆内存版 - Disk Cache)
+仓库货物检测系统 V13 (通用增强版)
 核心升级：
-1. 图片存入硬盘临时目录，内存仅存路径
-2. 增加 gc.collect() 主动释放内存
-3. 限制最大并行处理逻辑
+1. [GPT建议] 支持自定义 Prompt (不再局限于纺织袋，想数什么填什么)
+2. [GPT建议] 改用绝对像素过滤 (防止误删远处小包)
+3. 保留 V12 的硬盘缓存与内存优化
 """
 
 import streamlit as st
@@ -20,11 +20,11 @@ import shutil
 import pandas as pd
 from datetime import datetime
 import time
-import gc  # 引入垃圾回收模块
+import gc
 
 # 页面配置
 st.set_page_config(
-    page_title="AI 批量盘点 V12 (省内存版)",
+    page_title="AI 通用盘点系统 V13",
     page_icon="🏭",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -39,20 +39,17 @@ if not os.path.exists(CACHE_DIR):
 
 @st.cache_resource(show_spinner=False)
 def load_model():
-    """加载模型 (内存占用大户，必须缓存)"""
+    """加载模型 (YOLO-World)"""
     try:
-        # 尝试加载更轻量的模型配置，如果显存不够会自动优化
+        # V13修改: 这里只加载模型权重，不绑定具体类别，类别在检测时动态设定
         model = YOLO('yolov8l-world.pt') 
-        CLASSES = ['textile bale', 'woven sack', 'pillow', 'sandbag',
-                   'wrapped package', 'stacked white sacks', 'wall of bales']
-        model.set_classes(CLASSES)
         return model
     except Exception as e:
         st.error(f"模型加载崩溃: {str(e)}")
         return None
 
 def clear_cache():
-    """清理旧的缓存文件，防止硬盘爆满"""
+    """清理缓存"""
     if os.path.exists(CACHE_DIR):
         try:
             shutil.rmtree(CACHE_DIR)
@@ -60,21 +57,26 @@ def clear_cache():
         except Exception:
             pass
 
-def detect_and_save(image_path, conf, iou, model, original_filename):
+def detect_and_save(image_path, conf, iou, model, original_filename, target_classes):
     """
-    检测并直接保存到硬盘，返回文件路径而不是图片数组
+    V13 检测逻辑: 接收自定义类别列表 + 绝对像素过滤
     """
+    # 动态设置当前要找的目标
+    model.set_classes(target_classes)
+
     SLICE_HEIGHT, SLICE_WIDTH = 640, 640
     SLICE_OVERLAP = 0.2
     AGNOSTIC_NMS = True
-    MIN_AREA_RATIO = 0.001
     DEDUP_THRESHOLD = iou
+    
+    # [GPT建议] 使用绝对像素面积过滤，而不是百分比
+    # 300像素大约是 17x17 的小方块，小于这个的视为噪点
+    MIN_PIXEL_AREA = 300 
 
     # 读取图片
     original_img = cv2.imread(image_path)
     if original_img is None: return None
     h, w = original_img.shape[:2]
-    min_area = w * h * MIN_AREA_RATIO
 
     # 切片计算
     overlap_h, overlap_w = int(SLICE_HEIGHT * SLICE_OVERLAP), int(SLICE_WIDTH * SLICE_OVERLAP)
@@ -103,8 +105,6 @@ def detect_and_save(image_path, conf, iou, model, original_filename):
             
             # 推理
             results = model.predict(source=temp_path, conf=conf, iou=iou, agnostic_nms=AGNOSTIC_NMS, verbose=False)
-            
-            # 立即释放 slice_img 内存
             del slice_img
             
             for box in results[0].boxes:
@@ -124,34 +124,39 @@ def detect_and_save(image_path, conf, iou, model, original_filename):
         if not any(compute_iou(box['xyxy'], xb['xyxy']) > DEDUP_THRESHOLD for xb in unique_boxes):
             unique_boxes.append(box)
 
-    final_boxes = [b for b in unique_boxes if b['area'] >= min_area]
+    # [GPT建议] 绝对面积过滤
+    final_boxes = [b for b in unique_boxes if b['area'] >= MIN_PIXEL_AREA]
 
     # 绘图
     annotated_img = original_img.copy()
     random.seed(42)
-    colors = {i: (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255)) for i in range(len(model.names))}
+    # 动态生成颜色
+    colors = {i: (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255)) for i in range(len(target_classes))}
     
     class_counts = {}
     for box in final_boxes:
-        cls = model.names[box['cls']]
-        class_counts[cls] = class_counts.get(cls, 0) + 1
+        # 此时 model.names 已经根据 set_classes 更新
+        cls_name = model.names[box['cls']]
+        class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
         x1, y1, x2, y2 = map(int, box['xyxy'])
-        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), colors[box['cls']], 2)
+        
+        color = colors.get(box['cls'], (0, 255, 0))
+        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), color, 2)
 
-    # --- 关键改动：保存到硬盘，释放内存 ---
+    # 保存缓存
     save_name = f"{int(time.time())}_{original_filename}"
     save_path = os.path.join(CACHE_DIR, save_name)
     cv2.imwrite(save_path, annotated_img)
 
-    # 释放大图内存
+    # 内存清理
     del original_img
     del annotated_img
     del all_boxes
-    gc.collect() # 强制垃圾回收
+    gc.collect()
 
     return {
         'count': len(final_boxes),
-        'img_path': save_path, # 这里存路径，不存图片数据
+        'img_path': save_path,
         'counts_detail': class_counts
     }
 
@@ -168,62 +173,75 @@ def main():
     if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
     if 'user_edits' not in st.session_state: st.session_state['user_edits'] = {}
 
-    with st.spinner("🚀 正在初始化轻量级引擎..."):
+    with st.spinner("🚀 AI 引擎加载中..."):
         model = load_model()
     if not model: st.stop()
 
     with st.sidebar:
-        st.title("🏭 批量盘点控制台")
-        st.caption("V12: 内存优化版")
+        st.title("🏭 智能盘点控制台")
+        st.caption("V13: 通用增强版")
         st.markdown("---")
         
-        conf = st.slider("置信度", 0.01, 0.5, 0.01)
-        iou = st.slider("去重阈值", 0.05, 0.8, 0.2)
+        st.subheader("1. 识别目标设置")
+        # [GPT建议] 开放 Prompt 接口
+        default_prompts = "textile bale, woven sack, wrapped package, stacked white sacks, wall of bales"
+        user_prompt = st.text_area(
+            "输入你想数的物体 (英文逗号分隔)", 
+            value=default_prompts,
+            height=100,
+            help="YOLO-World 是通用的，你可以输入 box, tire, bottle, helmet 等任何物体"
+        )
+        # 清洗用户输入
+        TARGET_CLASSES = [x.strip() for x in user_prompt.split(',') if x.strip()]
+        
+        st.subheader("2. 灵敏度参数")
+        # 默认值微调
+        conf = st.slider("置信度 (Conf)", 0.01, 0.5, 0.05, help="默认0.05，越小发现越多")
+        iou = st.slider("去重阈值 (IoU)", 0.05, 0.8, 0.35, help="默认0.35，防止过度合并")
         
         st.markdown("---")
         
         uploaded_files = st.file_uploader(
-            "选择图片 (建议单次不超过10张)", 
+            "3. 上传图片 (建议分批处理)", 
             type=['jpg', 'png'], 
             accept_multiple_files=True
         )
 
         st.markdown("---")
-        start_btn = st.button("🚀 开始批量检测", type="primary", use_container_width=True)
+        start_btn = st.button("🚀 开始检测", type="primary", use_container_width=True)
         
         if start_btn:
             if not uploaded_files:
                 st.warning("⚠️ 请先上传图片！")
+            elif not TARGET_CLASSES:
+                st.warning("⚠️ 请至少输入一个识别目标！")
             else:
-                # 1. 清理环境
+                # 清理
                 st.session_state['data_store'] = {}
                 st.session_state['user_edits'] = {}
-                clear_cache() # 清理旧图片
-                gc.collect()  # 再次确保内存干净
+                clear_cache()
+                gc.collect()
                 
-                # 2. 进度条
-                st.info(f"📸 开始处理 {len(uploaded_files)} 张图片...")
+                st.info(f"正在寻找: {TARGET_CLASSES}")
                 progress_bar = st.progress(0)
                 
                 for idx, file_obj in enumerate(uploaded_files):
-                    progress_bar.progress((idx) / len(uploaded_files), text=f"分析中: {file_obj.name} (请勿刷新)...")
+                    progress_bar.progress((idx) / len(uploaded_files), text=f"正在分析: {file_obj.name}...")
                     
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
                         tmp.write(file_obj.read())
                         tmp_path = tmp.name
                     
-                    # 运行检测
                     try:
-                        result = detect_and_save(tmp_path, conf, iou, model, file_obj.name)
+                        # 传入用户自定义的 CLASSES
+                        result = detect_and_save(tmp_path, conf, iou, model, file_obj.name, TARGET_CLASSES)
                         if result:
                             st.session_state['data_store'][file_obj.name] = result
                             st.session_state['user_edits'][file_obj.name] = {'depth': 1, 'manual': 0}
                     except Exception as e:
-                        st.error(f"处理 {file_obj.name} 时出错: {e}")
+                        st.error(f"出错: {e}")
                     
-                    # 清理输入临时文件
                     os.remove(tmp_path)
-                    # 每处理一张，强制清理内存
                     gc.collect()
                 
                 progress_bar.progress(1.0, text="✅ 完成！")
@@ -234,7 +252,9 @@ def main():
     st.title("🏭 仓库盘点总览")
 
     if not st.session_state['data_store']:
-        st.info("👈 内存已优化。请在左侧上传图片并点击开始。建议每次上传 5-10 张以保证流畅。")
+        st.info(f"👈 准备就绪。当前识别目标: {len(TARGET_CLASSES)} 类。请上传图片并开始。")
+        with st.expander("查看当前识别列表"):
+            st.write(TARGET_CLASSES)
         st.stop()
 
     # Dashboard
@@ -245,13 +265,13 @@ def main():
         grand_total += (result['count'] + edits['manual']) * edits['depth']
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("📸 本次盘点", f"{len(st.session_state['data_store'])} 张")
-    col2.metric("📦 视觉总和", f"{total_ai_count} 个")
+    col1.metric("📸 图片数量", f"{len(st.session_state['data_store'])} 张")
+    col2.metric("📦 AI 计数", f"{total_ai_count} 个")
     col3.metric("💰 库存总计", f"{grand_total} 个")
     
     st.markdown("---")
 
-    # 分图校对 (从硬盘读取显示)
+    # 分图校对
     st.subheader("🔍 校对与修正")
     file_list = list(st.session_state['data_store'].keys())
     
@@ -265,14 +285,18 @@ def main():
 
         c1, c2 = st.columns([2, 1])
         with c1:
-            # 关键：从硬盘路径加载图片显示，而不是从内存读取
             if os.path.exists(data['img_path']):
                 st.image(data['img_path'], caption=f"文件: {selected_file}", use_container_width=True)
             else:
-                st.error("图片缓存已过期或被清理，请重新检测。")
+                st.error("图片缓存失效，请重新检测")
 
         with c2:
             st.markdown(f"### 计数: **{data['count']}**")
+            # 显示分类详情
+            with st.expander("分类详情"):
+                for k, v in data['counts_detail'].items():
+                    st.write(f"- {k}: {v}")
+            
             st.markdown("---")
             new_depth = st.number_input("堆叠深度", min_value=1, value=edits['depth'], key=f"d_{selected_file}")
             new_manual = st.number_input("人工补差", value=edits['manual'], step=1, key=f"m_{selected_file}")
@@ -293,6 +317,7 @@ def main():
         final = (result['count'] + e['manual']) * e['depth']
         report_data.append({
             "文件名": name,
+            "检测目标": str(TARGET_CLASSES), # 记录这批查的是什么
             "AI识别数": result['count'],
             "人工补差": e['manual'],
             "堆叠深度": e['depth'],
@@ -303,7 +328,7 @@ def main():
     df = pd.DataFrame(report_data)
     if not df.empty:
         csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📊 下载报表", csv, f"Report_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+        st.download_button("📊 下载完整报表", csv, f"Report_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
