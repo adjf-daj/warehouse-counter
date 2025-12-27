@@ -28,7 +28,7 @@ import torch
 import warnings
 
 # ==================== 0. 全局常量配置 (SSOT) ====================
-CONF_MODEL_NAME = 'yolov8l-world.pt'
+CONF_MODEL_NAME = 'yolov8s-world.pt'
 CONF_SLICE_SIZE = 640
 CONF_SLICE_OVERLAP_RATIO = 0.2
 CONF_SLICE_NMS_IOU = 0.5
@@ -562,3 +562,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
