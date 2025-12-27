@@ -1,5 +1,7 @@
-streamlit==1.52.2
-ultralytics==8.3.50
-opencv-python-headless==4.10.0.84
-numpy==2.2.6
-openai-clip
+streamlit
+ultralytics
+opencv-python-headless
+pandas
+Pillow
+numpy
+torch  # 如果需要 GPU 支持
