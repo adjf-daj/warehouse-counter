@@ -4,4 +4,5 @@ opencv-python-headless
 pandas
 Pillow
 numpy
-torch  # 如果需要 GPU 支持
+torch
+openai-clip  <-- 必须加上这一行
