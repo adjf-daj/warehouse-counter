@@ -1,8 +1,7 @@
 streamlit
-ultralytics
 opencv-python-headless
+numpy
 pandas
 Pillow
-numpy
-torch
-openai-clip  <-- 必须加上这一行
+ultralytics
+openai-clip
